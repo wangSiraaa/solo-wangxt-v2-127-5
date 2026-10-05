@@ -44,3 +44,16 @@ class Repository(Protocol):
     def list_failures(self, limit: int, offset: int) -> list[dict[str, Any]]: ...
     def get_attachment(self, attachment_id: int) -> dict[str, Any] | None: ...
     def get_attachment_by_message(self, message_pk: int, attachment_id: int) -> dict[str, Any] | None: ...
+    def list_message_headers(self, message_pk: int) -> list[dict[str, Any]]:
+        """Return persisted header rows (ordinal/name/value/raw_value) for a message."""
+        ...
+
+    def get_thread_facts(self) -> dict[str, Any]:
+        """Return identity/reference facts for *all* messages, read-only.
+
+        Shape: ``{"messages": [{"message_pk", "message_id", "subject",
+        "timestamp", "references": [...], "in_reply_to": [...]}]}``. Used by
+        thread fact export to recompute conflict hints without mutating the
+        stored thread assignments.
+        """
+        ...

@@ -96,3 +96,41 @@ def test_idempotent_schema_init(pg_client):
     # creating a second repository over the same DSN must not error on DDL
     arch.repo.init_schema()
     assert c.get("/health").status_code == 200
+
+
+def test_thread_export_roundtrip(pg_client):
+    c, arch = pg_client
+    for n in ["02_cycle_a.eml", "02_cycle_b.eml", "04_duplicate_id_a.eml",
+              "04_duplicate_id_b.eml", "01_multibyte.eml"]:
+        _post(c, n, recompute_threads=False)
+    c.post("/threads/rebuild")
+
+    cycle_pk = c.get("/search", params={"q": "cycle-a"}).json()["results"][0]["id"]
+    key = c.get(f"/messages/{cycle_pk}").json()["thread_key"]
+    doc = c.get(f"/threads/{key}/export").json()
+    assert len(doc["messages"]) == 2
+    flat = {x for cyc in doc["conflicts"]["cycles"] for x in cyc}
+    assert {"cycle-a@example.com", "cycle-b@example.com"} <= flat
+    # headers come from the real message_headers table
+    names = {h["name"] for m in doc["messages"] for h in m["headers"]}
+    assert {"Message-ID", "References", "In-Reply-To"} <= names
+    # duplicate-id thread keeps two records
+    dup_pk = c.get("/search", params={"q": "dup-1"}).json()["results"][0]["id"]
+    dup_key = c.get(f"/messages/{dup_pk}").json()["thread_key"]
+    dup = c.get(f"/threads/{dup_key}/export").json()
+    assert len(dup["messages"]) == 2
+    assert dup["conflicts"]["duplicate_message_ids"][0]["message_id"] == "dup-1@example.com"
+    # stored attachments are downloadable per the controlled-store probe;
+    # export never contains bytes
+    multi_pk = c.get("/search", params={"q": "multi-01"}).json()["results"][0]["id"]
+    mkey = c.get(f"/messages/{multi_pk}").json()["thread_key"]
+    mdoc = c.get(f"/threads/{mkey}/export").json()
+    pdf = next(a for m in mdoc["messages"] for a in m["attachments"]
+               if a["content_type"] == "application/pdf")
+    assert pdf["downloadable"] is True
+    assert "JVBERi0xLjQ" not in c.get(f"/threads/{mkey}/export").content.decode()
+    # text format renders too
+    text = c.get(f"/threads/{key}/export", params={"fmt": "text"})
+    assert text.status_code == 200
+    assert "THREAD FACT EXPORT" in text.text
+

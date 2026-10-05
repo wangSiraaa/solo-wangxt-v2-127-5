@@ -374,6 +374,51 @@ class PgRepository:
             cols = [c.name for c in cur.description]
             return _jsonify(dict(zip(cols, row)))
 
+    def list_message_headers(self, message_pk: int) -> list[dict[str, Any]]:
+        with self.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT ordinal, name, value, raw_value
+                FROM message_headers WHERE message_id = %s ORDER BY ordinal
+                """,
+                (message_pk,),
+            )
+            cols = [c.name for c in cur.description]
+            return _jsonify([dict(zip(cols, r)) for r in cur.fetchall()])
+
+    def get_thread_facts(self) -> dict[str, Any]:
+        """Read-only identity/reference facts for all messages (no writes)."""
+        with self.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT m.id, m.message_id, m.subject,
+                       EXTRACT(EPOCH FROM m.date),
+                       (SELECT jsonb_agg(jsonb_build_object('kind', kind, 'value', value)
+                                         ORDER BY ordinal)
+                          FROM message_identifiers i WHERE i.message_pk = m.id) AS idents
+                FROM messages m ORDER BY m.id
+                """
+            )
+            rows: list[dict[str, Any]] = []
+            for pk, mid, subject, ts, idents in cur.fetchall():
+                refs, irt = [], []
+                for item in idents or []:
+                    if item["kind"] == "references":
+                        refs.append(item["value"])
+                    elif item["kind"] == "in_reply_to":
+                        irt.append(item["value"])
+                rows.append(
+                    {
+                        "message_pk": pk,
+                        "message_id": mid,
+                        "subject": subject,
+                        "timestamp": ts,
+                        "references": refs,
+                        "in_reply_to": irt,
+                    }
+                )
+        return {"messages": rows}
+
 
 def _jsonify(value: Any) -> Any:
     """Decode Jsonb values already parsed by psycopg (dicts/lists) — pass through."""

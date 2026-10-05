@@ -326,3 +326,25 @@ class MemoryRepository:
             if a["id"] == attachment_id:
                 return dict(a)
         return None
+
+    def list_message_headers(self, message_pk: int) -> list[dict[str, Any]]:
+        return [dict(h) for h in self.headers if h["message_id"] == message_pk]
+
+    def get_thread_facts(self) -> dict[str, Any]:
+        rows: list[dict[str, Any]] = []
+        for pk in sorted(self.messages):
+            m = self.messages[pk]
+            refs = [i["value"] for i in self.identifiers if i["message_pk"] == pk and i["kind"] == "references"]
+            irt = [i["value"] for i in self.identifiers if i["message_pk"] == pk and i["kind"] == "in_reply_to"]
+            ts = m["date"].timestamp() if m["date"] else None
+            rows.append(
+                {
+                    "message_pk": pk,
+                    "message_id": m["message_id"],
+                    "subject": m["subject"],
+                    "timestamp": ts,
+                    "references": refs,
+                    "in_reply_to": irt,
+                }
+            )
+        return {"messages": rows}

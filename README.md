@@ -49,6 +49,36 @@ Implemented in `app/threads.py` (pure function, unit tested):
 * Reference cycles are detected with bounded three-color DFS (`cycles`);
   dangling references (`dangling_references`) are reported, not hidden.
 
+### Thread fact export (offline / legal review)
+
+`GET /threads/{key}/export?fmt=json` (default) or `fmt=text` hands an offline
+reviewer everything searchable about one conversation. The export is
+**reconstructed from currently persisted facts** and is strictly read-only —
+it never calls a rebuild or changes the stored conversation assignment:
+
+* **Membership/order** come from the stored `thread_key` (date ascending,
+  `message_pk` tiebreak); **conflict hints** (cycles, duplicate Message-IDs,
+  dangling references, weak subject suggestions) are recomputed with the same
+  pure threader and scoped to the exported members, both thread-wide and
+  per-message.
+* Each member carries its **headers** (decoded value + raw value, original
+  order), envelope addresses, references, **plain-text bodies only** (HTML
+  parts contribute extracted text — `safe_html`/`escaped_html` and any
+  unprocessed HTML never cross the boundary), **attachment metadata**
+  (filename/raw name, MIME path, content type, size, sha256, cid, storage
+  path) and an **original-EML summary** (ingest id, status, sha256, size,
+  storage path, on-disk availability).
+* **No bytes are embedded**: neither attachment payloads nor the raw EML.
+  Attachments that were never stored, or whose bytes have vanished from the
+  controlled directory, still export their metadata with
+  `downloadable: false` and a reason (`not_stored` / `bytes_missing`).
+* Two mails sharing a Message-ID stay **two separate member records**, both
+  flagged with the `duplicate_message_id` conflict; a circular-reference
+  thread exports every member with `reference_cycle` hints.
+
+The text rendering is a flat reviewer report (no HTML); the JSON rendering is
+stable machine-readable facts (schema version `1.0`).
+
 ## API
 
 | Method | Path | Purpose |
@@ -58,6 +88,7 @@ Implemented in `app/threads.py` (pure function, unit tested):
 | GET | `/messages/{id}/attachments/{aid}/download` | stream attachment bytes (path re-validated) |
 | GET | `/search?q=` | substring over subject, Message-ID, all header values, body plain text |
 | GET | `/threads` / `/threads/{key}` | thread summaries / ordered members with reference headers |
+| GET | `/threads/{key}/export?fmt=json\|text` | offline-review fact export (see below) |
 | POST | `/threads/rebuild` | recompute all threads; returns conflicts/cycles/dangling/weak hints |
 | GET | `/ingests/{id}` | provenance: raw digest/path + every defect located by stage |
 | GET | `/failures` | failed/defective ingests with their defect lists |
@@ -91,7 +122,7 @@ ls samples/
 ### Tests
 
 ```bash
-.venv/bin/python -m pytest                       # 47 unit + API tests (memory backend)
+.venv/bin/python -m pytest                       # 61 unit + API tests (memory backend)
 EMLARCH_RUN_PG_TESTS=1 EMLARCH_TEST_DSN='postgresql://postgres@/postgres?host=/tmp/pgsock&port=55432' \
   .venv/bin/python -m pytest                     # + real PostgreSQL integration tests
 ```
@@ -114,6 +145,7 @@ app/
     models.py          structured result dataclasses
   storage.py           ControlledStorage (path safety, 0600, metadata logs)
   threads.py           Message-ID graph + cycles + conflicts + weak subjects
+  export.py            read-only thread fact export (JSON + reviewer text)
   pg_repository.py     PostgreSQL persistence (psycopg3)
   memory_repository.py same interface, in-memory (tests / demo)
   service.py           parse -> store -> persist -> thread orchestration

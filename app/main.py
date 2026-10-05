@@ -5,13 +5,15 @@ its size is bounded by an explicit streaming cap.
 """
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, PlainTextResponse, Response
 
 from app.config import Settings, get_settings
+from app.export import build_thread_export, render_text_export
 from app.memory_repository import MemoryRepository
 from app.pg_repository import PgRepository
 from app.repository import Repository
@@ -170,6 +172,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         offset: int = Query(0, ge=0),
     ) -> list[dict[str, Any]]:
         return get_state(request).repo.list_threads(limit, offset)
+
+    @app.get("/threads/{thread_key:path}/export", tags=["threads"])
+    def export_thread(
+        request: Request,
+        thread_key: str,
+        fmt: str = Query("json", pattern="^(json|text)$"),
+    ) -> Response:
+        """Reconstruct one thread's reviewable facts from persisted data.
+
+        Read-only: membership/order come from the stored thread assignment and
+        conflict hints are recomputed without writing. No attachment/EML bytes
+        and no unprocessed HTML are emitted.
+        """
+        st = get_state(request)
+        doc = build_thread_export(
+            st.repo,
+            thread_key,
+            attachment_available=st.attachment_storage.exists,
+            raw_available=st.raw_storage.exists,
+        )
+        if doc is None:
+            raise HTTPException(status_code=404, detail="thread not found")
+        if fmt == "text":
+            return PlainTextResponse(
+                render_text_export(doc),
+                headers={"Content-Disposition": 'inline; filename="thread-facts.txt"'},
+            )
+        return Response(
+            content=json.dumps(doc, ensure_ascii=False, indent=2).encode("utf-8"),
+            media_type="application/json",
+            headers={"Content-Disposition": 'inline; filename="thread-facts.json"'},
+        )
 
     @app.get("/threads/{thread_key:path}", response_model=ThreadDetail, tags=["threads"])
     def get_thread(request: Request, thread_key: str) -> dict[str, Any]:
