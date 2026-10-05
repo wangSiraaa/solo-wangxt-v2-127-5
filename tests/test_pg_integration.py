@@ -80,6 +80,60 @@ def test_threading_sql_roundtrip(pg_client):
     assert md["thread_key"]
 
 
+def test_thread_fact_export_roundtrip(pg_client):
+    c, _ = pg_client
+    for n in ["02_cycle_a.eml", "02_cycle_b.eml", "04_duplicate_id_a.eml",
+              "04_duplicate_id_b.eml", "01_multibyte.eml", "03_missing_id.eml"]:
+        _post(c, n, recompute_threads=False)
+    c.post("/threads/rebuild")
+
+    pk = c.get("/search", params={"q": "cycle-a"}).json()["results"][0]["id"]
+    key = c.get(f"/messages/{pk}").json()["thread_key"]
+
+    r = c.get(f"/threads/{key}/export")
+    assert r.status_code == 200, r.text
+    bundle = r.json()
+    assert bundle["member_count"] == 2
+    flat = {x for cyc in bundle["conflicts"]["cycles"] for x in cyc["cycle"]}
+    assert {"cycle-a@example.com", "cycle-b@example.com"} <= flat
+    assert any(
+        d["message_id"] == "cycle-c@example.com"
+        for d in bundle["conflicts"]["dangling_references"]
+    )
+    # no markup-bearing columns leak out of the SQL projection
+    raw = r.content.decode()
+    assert "safe_html" not in raw and "escaped_html" not in raw
+
+    # duplicate id thread keeps two records with a conflict hint
+    dpk = c.get("/search", params={"q": "dup-1"}).json()["results"][0]["id"]
+    dkey = c.get(f"/messages/{dpk}").json()["thread_key"]
+    dup = c.get(f"/threads/{dkey}/export").json()
+    assert dup["member_count"] == 2
+    assert dup["conflicts"]["duplicate_message_ids"][0]["message_pks"] == sorted(
+        dup["message_pks"]
+    )
+
+    # multibyte attachments carry metadata and a real disk verdict
+    mpk = c.get("/search", params={"q": "multi-01"}).json()["results"][0]["id"]
+    mkey = c.get(f"/messages/{mpk}").json()["thread_key"]
+    mex = c.get(f"/threads/{mkey}/export").json()
+    atts = [a for m in mex["messages"] for a in m["attachments"]]
+    assert len(atts) == 2
+    assert all(a["downloadable"] and a["sha256"] for a in atts)
+
+    # text rendering is served too
+    txt = c.get(f"/threads/{key}/export", params={"format": "text"})
+    assert txt.status_code == 200
+    assert txt.headers["content-type"].startswith("text/plain")
+    assert "THREAD FACT EXPORT" in txt.text
+
+    # export did not reassign anything
+    rebuilt_after = c.post("/threads/rebuild").json()
+    assert c.get(f"/messages/{pk}").json()["thread_key"] == key
+    assert any({"cycle-a@example.com", "cycle-b@example.com"} <= set(cy)
+               for cy in rebuilt_after["cycles"])
+
+
 def test_search_sql_joins(pg_client):
     c, _ = pg_client
     _post(c, "01_multibyte.eml")

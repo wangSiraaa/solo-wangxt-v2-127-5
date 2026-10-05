@@ -275,6 +275,89 @@ class MemoryRepository:
             )
         return {"thread_key": thread_key, "messages": rows}
 
+    def thread_export_facts(self, thread_key: str) -> dict[str, Any] | None:
+        msgs = [m for m in self.messages.values() if m["thread_key"] == thread_key]
+        if not msgs:
+            return None
+        epoch = datetime.min.replace(tzinfo=timezone.utc)
+        ordered = sorted(msgs, key=lambda x: (x["date"] or epoch, x["id"]))
+        members: list[dict[str, Any]] = []
+        for m in ordered:
+            pk = m["id"]
+            ingest = self.ingests.get(m["ingest_id"], {})
+            idents = [
+                {"kind": i["kind"], "value": i["value"], "ordinal": i["ordinal"]}
+                for i in self.identifiers
+                if i["message_pk"] == pk
+            ]
+            members.append(
+                {
+                    "id": pk,
+                    "ingest_id": m["ingest_id"],
+                    "message_id": m["message_id"],
+                    "subject": m["subject"],
+                    "raw_subject": m["raw_subject"],
+                    "date": m["date"],
+                    "from_json": [dict(a) for a in m["from_json"]],
+                    "to_json": [dict(a) for a in m["to_json"]],
+                    "cc_json": [dict(a) for a in m["cc_json"]],
+                    "bcc_json": [dict(a) for a in m["bcc_json"]],
+                    "reply_to_json": [dict(a) for a in m["reply_to_json"]],
+                    "sender_json": [dict(a) for a in m["sender_json"]],
+                    "headers": [
+                        {
+                            "ordinal": h["ordinal"],
+                            "name": h["name"],
+                            "value": h["value"],
+                            "raw_value": h["raw_value"],
+                        }
+                        for h in sorted(
+                            (h for h in self.headers if h["message_id"] == pk),
+                            key=lambda h: h["ordinal"],
+                        )
+                    ],
+                    "identifiers": idents,
+                    "bodies": [
+                        {
+                            "mime_path": b["mime_path"],
+                            "content_type": b["content_type"],
+                            "charset": b["charset"],
+                            "declared_charset": b["declared_charset"],
+                            "disposition": b["disposition"],
+                            "content_id": b["content_id"],
+                            "content_location": b["content_location"],
+                            "byte_size": b["byte_size"],
+                            "text": b.get("text"),
+                            "plain_text": b.get("plain_text"),
+                            "referenced_cids": list(b.get("referenced_cids") or []),
+                        }
+                        for b in self.bodies
+                        if b["message_pk"] == pk
+                    ],
+                    "attachments": [
+                        {k: a.get(k) for k in (
+                            "id", "mime_path", "content_type", "charset", "disposition",
+                            "filename", "raw_filename", "content_id", "content_location",
+                            "byte_size", "checksum_sha256", "storage_path", "stored",
+                        )}
+                        for a in self.attachments
+                        if a["message_pk"] == pk
+                    ],
+                    "tree_json": m.get("tree_json"),
+                    "raw_sha256": m["raw_sha256"],
+                    "raw_path": ingest.get("raw_path", m.get("raw_path")),
+                    "missing_id": m["missing_id"],
+                    "defect_count": sum(1 for d in self.defects if d["message_pk"] == pk),
+                    "ingest": {
+                        "id": ingest.get("id"),
+                        "status": ingest.get("status"),
+                        "raw_size": ingest.get("raw_size"),
+                        "raw_sha256": ingest.get("raw_sha256"),
+                    },
+                }
+            )
+        return {"thread_key": thread_key, "messages": members}
+
     def list_threads(self, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
         grouped: dict[str, list[dict[str, Any]]] = {}
         for m in self.messages.values():

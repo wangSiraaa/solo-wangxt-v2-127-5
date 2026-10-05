@@ -328,6 +328,88 @@ class PgRepository:
             cols = [c.name for c in cur.description]
             return _jsonify({"thread_key": thread_key, "messages": [dict(zip(cols, r)) for r in rows]})
 
+    def thread_export_facts(self, thread_key: str) -> dict[str, Any] | None:
+        with self.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, ingest_id, message_id, subject, raw_subject, date,
+                       from_json, to_json, cc_json, bcc_json, reply_to_json, sender_json,
+                       tree_json, raw_sha256, missing_id
+                FROM messages
+                WHERE thread_key = %s
+                ORDER BY date ASC NULLS LAST, id ASC
+                """,
+                (thread_key,),
+            )
+            rows = cur.fetchall()
+            if not rows:
+                return None
+            mcols = [c.name for c in cur.description]
+            members: list[dict[str, Any]] = []
+            for row in rows:
+                m = dict(zip(mcols, row))
+                pk = m["id"]
+                cur.execute(
+                    "SELECT ordinal, name, value, raw_value FROM message_headers "
+                    "WHERE message_id = %s ORDER BY ordinal",
+                    (pk,),
+                )
+                m["headers"] = [
+                    dict(zip(["ordinal", "name", "value", "raw_value"], r))
+                    for r in cur.fetchall()
+                ]
+                cur.execute(
+                    "SELECT kind, value, ordinal FROM message_identifiers "
+                    "WHERE message_pk = %s ORDER BY kind, ordinal",
+                    (pk,),
+                )
+                m["identifiers"] = [
+                    dict(zip(["kind", "value", "ordinal"], r)) for r in cur.fetchall()
+                ]
+                # Plain text projections only: safe_html / escaped_html are not
+                # selected so an export cannot embed markup.
+                cur.execute(
+                    """
+                    SELECT mime_path, content_type, charset, declared_charset, disposition,
+                           content_id, content_location, byte_size, text, plain_text,
+                           referenced_cids
+                    FROM bodies WHERE message_pk = %s ORDER BY id
+                    """,
+                    (pk,),
+                )
+                bcols = [c.name for c in cur.description]
+                m["bodies"] = [dict(zip(bcols, r)) for r in cur.fetchall()]
+                cur.execute(
+                    """
+                    SELECT id, mime_path, content_type, charset, disposition, filename,
+                           raw_filename, content_id, content_location, byte_size,
+                           checksum_sha256, storage_path, stored
+                    FROM attachments WHERE message_pk = %s ORDER BY id
+                    """,
+                    (pk,),
+                )
+                acols = [c.name for c in cur.description]
+                m["attachments"] = [dict(zip(acols, r)) for r in cur.fetchall()]
+                cur.execute(
+                    """
+                    SELECT i.id, i.status, i.raw_size, i.raw_sha256, i.raw_path,
+                           (SELECT count(*) FROM defects d WHERE d.message_pk = m.id) AS defect_count
+                    FROM ingests i, messages m
+                    WHERE m.id = %s AND i.id = m.ingest_id
+                    """,
+                    (pk,),
+                )
+                r = cur.fetchone()
+                m["raw_path"] = r[4] if r else None
+                m["defect_count"] = r[5] if r else 0
+                m["ingest"] = (
+                    {"id": r[0], "status": r[1], "raw_size": r[2], "raw_sha256": r[3]}
+                    if r
+                    else {}
+                )
+                members.append(m)
+        return _jsonify({"thread_key": thread_key, "messages": members})
+
     def list_threads(self, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
         with self.connect() as conn, conn.cursor() as cur:
             cur.execute(

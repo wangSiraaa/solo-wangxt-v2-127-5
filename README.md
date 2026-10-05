@@ -49,6 +49,33 @@ Implemented in `app/threads.py` (pure function, unit tested):
 * Reference cycles are detected with bounded three-color DFS (`cycles`);
   dangling references (`dangling_references`) are reported, not hidden.
 
+### Thread fact export (legal / offline review)
+
+`GET /threads/{key}/export` (`app/export.py`) renders one thread for
+hand-off to an offline reviewer and is rebuilt **entirely from persisted
+facts** — no raw EML is reparsed and stored `thread_key` assignments are
+never modified (cycles/duplicates/dangling are recomputed read-only as
+*hints* via the same pure threading function).
+
+Per message, in thread/time order:
+
+* every header (decoded value **and** raw encoded value), addresses,
+  `References` / `In-Reply-To` tokens;
+* body content as **plain text only** — HTML parts appear via their
+  extracted text (`text_source: plain_text_from_html`); raw, safe and
+  escaped HTML are never part of the projection;
+* attachment **metadata** (mime path, filename/raw filename, size, sha256,
+  content id, stored path) with an explicit `downloadable` verdict:
+  `not_stored` (entity exists, bytes were never persisted) or `bytes_missing`
+  (path recorded but the file is gone) — payload bytes are never embedded;
+* the original EML summary (ingest id, sha256, size, stored path, on-disk
+  availability, MIME tree, defect count).
+
+Thread-level conflict hints cover reference cycles (with member pks),
+duplicate Message-IDs (both records are always retained separately),
+dangling references and members missing a Message-ID. `format=json` is the
+default; `format=text` returns a stable readable rendering.
+
 ## API
 
 | Method | Path | Purpose |
@@ -58,6 +85,7 @@ Implemented in `app/threads.py` (pure function, unit tested):
 | GET | `/messages/{id}/attachments/{aid}/download` | stream attachment bytes (path re-validated) |
 | GET | `/search?q=` | substring over subject, Message-ID, all header values, body plain text |
 | GET | `/threads` / `/threads/{key}` | thread summaries / ordered members with reference headers |
+| GET | `/threads/{key}/export?format=json\|text` | offline review bundle rebuilt from persisted facts |
 | POST | `/threads/rebuild` | recompute all threads; returns conflicts/cycles/dangling/weak hints |
 | GET | `/ingests/{id}` | provenance: raw digest/path + every defect located by stage |
 | GET | `/failures` | failed/defective ingests with their defect lists |
@@ -91,7 +119,7 @@ ls samples/
 ### Tests
 
 ```bash
-.venv/bin/python -m pytest                       # 47 unit + API tests (memory backend)
+.venv/bin/python -m pytest                       # 56 unit + API tests (memory backend)
 EMLARCH_RUN_PG_TESTS=1 EMLARCH_TEST_DSN='postgresql://postgres@/postgres?host=/tmp/pgsock&port=55432' \
   .venv/bin/python -m pytest                     # + real PostgreSQL integration tests
 ```
@@ -114,6 +142,7 @@ app/
     models.py          structured result dataclasses
   storage.py           ControlledStorage (path safety, 0600, metadata logs)
   threads.py           Message-ID graph + cycles + conflicts + weak subjects
+  export.py            thread fact export (JSON/text) from persisted facts
   pg_repository.py     PostgreSQL persistence (psycopg3)
   memory_repository.py same interface, in-memory (tests / demo)
   service.py           parse -> store -> persist -> thread orchestration
